@@ -75,7 +75,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("websockets").setLevel(logging.WARNING)
 
 # Enable debug for specific components when needed
-if os.environ.get("MOSHI_DEBUG"):
+if os.environ.get("FUJIELAB_MOSHI_CLIENT_DEBUG"):
     logger.setLevel(logging.DEBUG)
 
 
@@ -169,8 +169,8 @@ class OggContainer:
         return crc
 
 
-class PurePythonOpusEncoder:
-    """Pure Python Opus encoder using opuslib"""
+class OpusEncoder:
+    """Opus encoder using opuslib"""
 
     def __init__(self, sample_rate=SAMPLE_RATE, channels=CHANNELS):
         self.sample_rate = sample_rate
@@ -189,9 +189,7 @@ class PurePythonOpusEncoder:
         self.headers_sent = False
         self.audio_buffer = np.array([], dtype=np.float32)
 
-        logger.info(
-            f"Pure Python Opus encoder initialized: {sample_rate}Hz, {channels} channel(s)"
-        )
+        logger.info(f"Opus encoder initialized: {sample_rate}Hz, {channels} channel(s)")
 
     def get_headers(self):
         """Get Opus headers as Ogg pages"""
@@ -298,8 +296,8 @@ class OggPageParser:
         return pages
 
 
-class PurePythonOpusDecoder:
-    """Pure Python Opus decoder for Ogg-wrapped Opus packets (improved from working implementation)"""
+class OpusDecoder:
+    """Opus decoder for Ogg-wrapped Opus packets"""
 
     def __init__(self, sample_rate=SAMPLE_RATE, channels=CHANNELS):
         self.sample_rate = sample_rate
@@ -312,9 +310,7 @@ class PurePythonOpusDecoder:
         self.headers_received = 0
         self.ogg_parser = OggPageParser()
 
-        logger.info(
-            f"Pure Python Opus decoder initialized: {sample_rate}Hz, {channels} channel(s)"
-        )
+        logger.info(f"Opus decoder initialized: {sample_rate}Hz, {channels} channel(s)")
 
     def decode(self, ogg_data: bytes) -> Optional[np.ndarray]:
         """Decode Ogg/Opus data"""
@@ -468,7 +464,7 @@ class PurePythonOpusDecoder:
 
 class MoshiClient:
     """
-    Moshi Client Library - Pure Python Implementation (Thread-based)
+    Moshi Client Library (Thread-based)
 
     A reusable client for Moshi voice assistant that handles WebSocket communication
     in a separate thread, providing simple synchronous methods for audio I/O.
@@ -698,8 +694,8 @@ class MoshiClient:
             logger.debug(f"Connecting to: {final_uri}")
 
             # Initialize audio components
-            self._encoder = PurePythonOpusEncoder()
-            self._decoder = PurePythonOpusDecoder()
+            self._encoder = OpusEncoder()
+            self._decoder = OpusDecoder()
 
             # Connect to WebSocket with optimized settings for high-throughput
             self._websocket = await websockets.connect(
