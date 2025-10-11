@@ -49,6 +49,7 @@ if __name__ == "__main__":
         pad_mult=0.0,
         repetition_penalty=1.0,
         repetition_penalty_context=64,
+        output_buffer_size=BUFFER_SIZE,
     )
     audio_queue = []  # Simple list to store received audio
     running = True
@@ -64,36 +65,33 @@ if __name__ == "__main__":
 
     # Audio output callback - plays received audio
     def audio_output_callback(outdata, frames, time, status):
+        global running
         if status:
             logger.warning(f"Output status: {status}")
 
         outdata.fill(0)  # Start with silence
 
-        # Get audio from client and add to our simple queue
-        while True:
-            received_audio = client.get_audio_output()
+        try:
+            # Get audio from client and play it
+            received_audio = client.get_audio_output(timeout=5)  # Block and wait
+
             if received_audio is None:
-                break
-            audio_queue.append(received_audio)
+                logger.error("Received audio is None - stopping client")
+                running = False
+                return
 
-        # Play audio from queue
-        output_samples = 0
-        while audio_queue and output_samples < frames:
-            chunk = audio_queue[0]
-            remaining_frames = frames - output_samples
+            if len(received_audio) != frames:
+                logger.error(
+                    f"Audio frame size mismatch: received {len(received_audio)}, expected {frames} - stopping client"
+                )
+                running = False
+                return
 
-            if len(chunk) <= remaining_frames:
-                # Use entire chunk
-                outdata[output_samples : output_samples + len(chunk), 0] = chunk
-                output_samples += len(chunk)
-                audio_queue.pop(0)
-            else:
-                # Use partial chunk
-                outdata[output_samples : output_samples + remaining_frames, 0] = chunk[
-                    :remaining_frames
-                ]
-                audio_queue[0] = chunk[remaining_frames:]
-                output_samples += remaining_frames
+            outdata[:, 0] = received_audio
+
+        except Exception as e:
+            logger.error(f"Error in audio output callback: {e} - stopping client")
+            running = False
 
     # Signal handler for clean shutdown
     def signal_handler(signum, frame):

@@ -54,7 +54,7 @@ except ImportError:
 SAMPLE_RATE = 24000  # Moshi uses 24kHz
 CHANNELS = 1  # Mono
 CHUNK_SIZE = 1920  # 80ms at 24kHz - Moshi's standard frame size
-OPUS_FRAME_SIZE = 480  # 20ms frames for Opus encoding
+OPUS_FRAME_SIZE = 1920  # 80ms frames for Opus encoding
 
 # Moshi generation parameters (same as Web interface defaults)
 DEFAULT_TEXT_TEMPERATURE = 0.7
@@ -178,9 +178,12 @@ class OpusEncoder:
         self.frame_size = OPUS_FRAME_SIZE  # 20ms at 24kHz = 480 samples
 
         # Create Opus encoder
-        self.encoder = opuslib.Encoder(
-            fs=sample_rate, channels=channels, application=opuslib.APPLICATION_VOIP
-        )
+        try:
+            self.encoder = opuslib.Encoder(
+                fs=sample_rate, channels=channels, application=opuslib.APPLICATION_VOIP
+            )
+        except Exception as e:
+            raise Exception(f"Could not create Opus encoder: {e}") from e
 
         # Create Ogg container
         self.ogg_container = OggContainer()
@@ -304,7 +307,10 @@ class OpusDecoder:
         self.channels = channels
 
         # Create Opus decoder
-        self.decoder = opuslib.Decoder(fs=sample_rate, channels=channels)
+        try:
+            self.decoder = opuslib.Decoder(fs=sample_rate, channels=channels)
+        except Exception as e:
+            raise Exception(f"Could not create Opus decoder: {e}") from e
 
         # Initialize state
         self.headers_received = 0
@@ -520,9 +526,6 @@ class MoshiClient:
 
         # Thread-safe queues for communication
         self.audio_input_queue = queue.Queue()  # Input: PCM data to send
-        self.audio_output_queue = queue.Queue(
-            maxsize=50
-        )  # Output: PCM data received (limited to prevent memory buildup)
         self.text_output_queue = queue.Queue()  # Output: Text responses
         self._raw_audio_queue = queue.Queue(
             maxsize=150
@@ -686,6 +689,7 @@ class MoshiClient:
             or None if timeout expires before enough data is available
         """
         start_time = time.time()
+        logger.debug(f"get_audio_output called with timeout={timeout}")
 
         while True:
             with self._buffer_lock:
@@ -693,33 +697,15 @@ class MoshiClient:
                 if len(self._output_audio_buffer) >= self.output_buffer_size:
                     # Extract the requested amount
                     result = self._output_audio_buffer[: self.output_buffer_size].copy()
+                    old_buffer_size = len(self._output_audio_buffer)
                     self._output_audio_buffer = self._output_audio_buffer[
                         self.output_buffer_size :
                     ]
+                    new_buffer_size = len(self._output_audio_buffer)
+                    logger.info(
+                        f"📤 get_audio_output: extracted {len(result)} samples, buffer: {old_buffer_size} → {new_buffer_size}"
+                    )
                     return result
-
-            # Try to get more data from the queue
-            queue_timeout = 0.01  # Short timeout for responsive checking
-            if timeout is not None and timeout == 0:
-                queue_timeout = 0  # Non-blocking mode
-
-            try:
-                if timeout == 0:
-                    # Non-blocking mode
-                    new_audio = self.audio_output_queue.get_nowait()
-                else:
-                    # Blocking mode with timeout
-                    new_audio = self.audio_output_queue.get(timeout=queue_timeout)
-
-                if new_audio is not None:
-                    with self._buffer_lock:
-                        self._output_audio_buffer = np.concatenate(
-                            [self._output_audio_buffer, new_audio]
-                        )
-                    continue  # Try again to see if we have enough now
-
-            except queue.Empty:
-                pass  # Continue to timeout check
 
             # Check timeout
             if timeout is not None:
@@ -728,9 +714,8 @@ class MoshiClient:
                 elif time.time() - start_time >= timeout:
                     return None  # Timeout expired
 
-            # Small sleep to prevent busy waiting
-            if timeout != 0:
-                time.sleep(0.001)
+            # # Small sleep to prevent busy waiting and allow decoder to process more data
+            # time.sleep(0.001)
 
     def get_text_output(self) -> Optional[str]:
         """
@@ -773,8 +758,21 @@ class MoshiClient:
             logger.debug(f"Connecting to: {final_uri}")
 
             # Initialize audio components
-            self._encoder = OpusEncoder()
-            self._decoder = OpusDecoder()
+            try:
+                logger.info("Initializing Opus encoder...")
+                self._encoder = OpusEncoder()
+                logger.info("Opus encoder initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize Opus encoder: {e}")
+                raise
+
+            try:
+                logger.info("Initializing Opus decoder...")
+                self._decoder = OpusDecoder()
+                logger.info("Opus decoder initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize Opus decoder: {e}")
+                raise
 
             # Connect to WebSocket with optimized settings for high-throughput
             self._websocket = await websockets.connect(
@@ -1039,41 +1037,24 @@ class MoshiClient:
                     if audio_data is not None and len(audio_data) > 0:
                         decoded_count += 1
 
-                        # Enhanced logging for debugging
-                        if decoded_count <= 10 or decoded_count % 50 == 1:
+                        # Add to the buffering system
+                        with self._buffer_lock:
+                            old_size = len(self._output_audio_buffer)
+                            self._output_audio_buffer = np.concatenate(
+                                [self._output_audio_buffer, audio_data]
+                            )
+                            new_size = len(self._output_audio_buffer)
+
+                        # Enhanced logging after buffer update
+                        if decoded_count <= 50 or decoded_count % 100 == 1:
                             rms = np.sqrt(np.mean(audio_data**2))
                             max_amp = np.max(np.abs(audio_data))
                             logger.info(
-                                f"✅ Decoded #{decoded_count}: {len(audio_data)} samples, RMS={rms:.4f}, Max={max_amp:.4f}"
+                                f"🔊 Buffer updated #{decoded_count}: {old_size} → {new_size} samples (+{len(audio_data)})"
                             )
-
-                            # Check for invalid audio data patterns
-                            zero_count = np.count_nonzero(audio_data == 0)
-                            if zero_count > len(audio_data) * 0.9:
-                                logger.warning(
-                                    f"⚠️  Too many zeros: {zero_count}/{len(audio_data)} ({zero_count/len(audio_data)*100:.1f}%)"
-                                )
-
-                            # Check for clipping
-                            clipped = np.count_nonzero(np.abs(audio_data) >= 0.95)
-                            if clipped > 0:
-                                logger.warning(
-                                    f"⚠️  Clipping detected: {clipped} samples"
-                                )
-
-                        # Add to output queue (keeping original behavior for legacy get_audio_output calls)
-                        try:
-                            self.audio_output_queue.put_nowait(audio_data.copy())
-                        except queue.Full:
-                            # Drop oldest frame if queue full
-                            try:
-                                self.audio_output_queue.get_nowait()
-                                self.audio_output_queue.put_nowait(audio_data.copy())
-                                logger.warning(
-                                    "🗑️  Dropped old audio frame due to queue full"
-                                )
-                            except queue.Empty:
-                                pass
+                            logger.info(
+                                f"✅ Decoded #{decoded_count}: {len(audio_data)} samples, RMS={rms:.4f}, Max={max_amp:.4f}, buffer={new_size}"
+                            )
                     else:
                         logger.warning(
                             f"❌ Decode failed or empty result for payload #{decoded_count}: {len(payload)} bytes"
@@ -1136,7 +1117,7 @@ class MoshiClient:
                 try:
                     # Try JSON first
                     text_data = json.loads(payload.decode("utf-8"))
-                    if "text" in text_data:
+                    if isinstance(text_data, dict) and "text" in text_data:
                         text = text_data["text"]
                         # Minimal logging for text
                         if len(text.strip()) > 0:
