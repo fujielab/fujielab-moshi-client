@@ -493,6 +493,7 @@ class MoshiClient:
         pad_mult=DEFAULT_PAD_MULT,
         repetition_penalty=DEFAULT_REPETITION_PENALTY,
         repetition_penalty_context=DEFAULT_REPETITION_PENALTY_CONTEXT,
+        output_buffer_size=CHUNK_SIZE,
     ):
         """
         Initialize MoshiClient with generation parameters.
@@ -505,6 +506,7 @@ class MoshiClient:
             pad_mult: Padding multiplier (-4 to 4, default: 0.0)
             repetition_penalty: Repetition penalty (1.0-2.0, default: 1.0)
             repetition_penalty_context: Repetition penalty context (0-200, default: 64)
+            output_buffer_size: Size of audio chunks returned by get_audio_output (default: 1920)
         """
         # Generation parameters
         self.text_temperature = text_temperature
@@ -514,6 +516,7 @@ class MoshiClient:
         self.pad_mult = pad_mult
         self.repetition_penalty = repetition_penalty
         self.repetition_penalty_context = repetition_penalty_context
+        self.output_buffer_size = output_buffer_size
 
         # Thread-safe queues for communication
         self.audio_input_queue = queue.Queue()  # Input: PCM data to send
@@ -524,6 +527,15 @@ class MoshiClient:
         self._raw_audio_queue = queue.Queue(
             maxsize=150
         )  # Raw audio payloads for background decoding (increased for better buffering)
+
+        # Audio buffering for arbitrary-length input/output
+        self._input_audio_buffer = np.array(
+            [], dtype=np.float32
+        )  # Buffer for input audio
+        self._output_audio_buffer = np.array(
+            [], dtype=np.float32
+        )  # Buffer for output audio
+        self._buffer_lock = threading.Lock()  # Lock for thread-safe buffer access
 
         # Thread management
         self._communication_thread = None
@@ -620,7 +632,10 @@ class MoshiClient:
 
     def add_audio_input(self, audio_data: np.ndarray):
         """
-        Add PCM audio data to input queue (thread-safe).
+        Add PCM audio data to input queue (thread-safe, arbitrary length).
+
+        The audio data will be buffered internally and sent to the server in
+        CHUNK_SIZE (1920 sample) chunks as required by Moshi.
 
         Args:
             audio_data: PCM audio data as numpy array (float32, mono, 24kHz)
@@ -636,22 +651,86 @@ class MoshiClient:
         if audio_data.dtype != np.float32:
             audio_data = audio_data.astype(np.float32)
 
-        try:
-            self.audio_input_queue.put_nowait(audio_data.copy())
-        except queue.Full:
-            logger.warning("Audio input queue full, dropping frame")
+        with self._buffer_lock:
+            # Add new audio data to input buffer
+            self._input_audio_buffer = np.concatenate(
+                [self._input_audio_buffer, audio_data]
+            )
 
-    def get_audio_output(self) -> Optional[np.ndarray]:
+            # Send complete chunks to the server
+            while len(self._input_audio_buffer) >= CHUNK_SIZE:
+                # Extract one chunk
+                chunk = self._input_audio_buffer[:CHUNK_SIZE].copy()
+                self._input_audio_buffer = self._input_audio_buffer[CHUNK_SIZE:]
+
+                # Send chunk to encoder queue
+                try:
+                    self.audio_input_queue.put_nowait(chunk)
+                except queue.Full:
+                    logger.warning("Audio input queue full, dropping frame")
+                    break
+
+    def get_audio_output(self, timeout: Optional[float] = None) -> Optional[np.ndarray]:
         """
-        Get received audio data (thread-safe, non-blocking).
+        Get received audio data (thread-safe, configurable size and timeout).
+
+        Waits until the configured output_buffer_size amount of audio data is available,
+        or until timeout expires.
+
+        Args:
+            timeout: Maximum time to wait for data in seconds. If None, waits indefinitely.
+                    If 0, returns immediately (non-blocking).
 
         Returns:
-            PCM audio data as numpy array (float32, mono, 24kHz) or None if no data available
+            PCM audio data as numpy array (float32, mono, 24kHz) with length=output_buffer_size,
+            or None if timeout expires before enough data is available
         """
-        try:
-            return self.audio_output_queue.get_nowait()
-        except queue.Empty:
-            return None
+        start_time = time.time()
+
+        while True:
+            with self._buffer_lock:
+                # Check if we have enough data in the output buffer
+                if len(self._output_audio_buffer) >= self.output_buffer_size:
+                    # Extract the requested amount
+                    result = self._output_audio_buffer[: self.output_buffer_size].copy()
+                    self._output_audio_buffer = self._output_audio_buffer[
+                        self.output_buffer_size :
+                    ]
+                    return result
+
+            # Try to get more data from the queue
+            queue_timeout = 0.01  # Short timeout for responsive checking
+            if timeout is not None and timeout == 0:
+                queue_timeout = 0  # Non-blocking mode
+
+            try:
+                if timeout == 0:
+                    # Non-blocking mode
+                    new_audio = self.audio_output_queue.get_nowait()
+                else:
+                    # Blocking mode with timeout
+                    new_audio = self.audio_output_queue.get(timeout=queue_timeout)
+
+                if new_audio is not None:
+                    with self._buffer_lock:
+                        self._output_audio_buffer = np.concatenate(
+                            [self._output_audio_buffer, new_audio]
+                        )
+                    continue  # Try again to see if we have enough now
+
+            except queue.Empty:
+                pass  # Continue to timeout check
+
+            # Check timeout
+            if timeout is not None:
+                if timeout == 0:
+                    return None  # Non-blocking mode, no data available
+                elif time.time() - start_time >= timeout:
+                    return None  # Timeout expired
+
+            # Small sleep to prevent busy waiting
+            if timeout != 0:
+                time.sleep(0.001)
 
     def get_text_output(self) -> Optional[str]:
         """
@@ -982,7 +1061,7 @@ class MoshiClient:
                                     f"⚠️  Clipping detected: {clipped} samples"
                                 )
 
-                        # Add to output queue
+                        # Add to output queue (keeping original behavior for legacy get_audio_output calls)
                         try:
                             self.audio_output_queue.put_nowait(audio_data.copy())
                         except queue.Full:

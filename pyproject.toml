@@ -21,3 +21,9 @@ license = { file = "LICENSE" }
 
 [project.urls]
 Homepage = "https://github.com/fujielab/fujielab-moshi-client"
+
+[tool.setuptools]
+packages = {find = {exclude = ["local_work*"]}}
+
+[tool.setuptools.package-data]
+"*" = ["*.py"]
