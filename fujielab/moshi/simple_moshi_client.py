@@ -3,14 +3,21 @@
 Simple Moshi Client - Minimal Example
 ====================================
 
-Simplest possible Moshi client implementation.
+Simplest possible Moshi client implementation with CLI overrides.
 No functions, no classes - just the main section.
 
 Requirements:
-- pip install websockets sounddevice numpy opuslib
+- pip install websockets sounddevice numpy opuslib samplerate
 
-Usage:
+Usage examples:
+    # Default
     python simple_moshi_client.py
+
+    # Change server URL and audio I/O sample rate
+    python simple_moshi_client.py -s ws://localhost:8998/api/chat -r 48000
+
+    # Tune MOSHI generation parameters
+    python simple_moshi_client.py --text-temperature 0.5 --audio-temperature 0.7 --text-topk 40
 """
 
 import sounddevice as sd
@@ -18,37 +25,65 @@ import numpy as np
 import logging
 import signal
 import time
+import samplerate
+import argparse
 
-from .moshi_client_lib import MoshiClient, SAMPLE_RATE, CHANNELS
+from .moshi_client_lib import MoshiClient, MOSHI_SAMPLE_RATE, MOSHI_CHANNELS
 
 # Simple logging setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-
 if __name__ == "__main__":
-    # Configuration
-    SERVER_URL = "ws://localhost:8998/api/chat"
-    BUFFER_SIZE = 1920  # Perfect match with Moshi frame size
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Simple Moshi client (voice chat)")
+    parser.add_argument("-s", "--server", default="ws://localhost:8998/api/chat", help="Moshi server WebSocket URL")
+    parser.add_argument("-r", "--audio-io-sample-rate", type=int, default=16000, help="Audio I/O sample rate for microphone/speaker (Hz)")
+    parser.add_argument("-b", "--buffer-size", type=int, default=1920, help="Audio block size (frames) for I/O and client output buffer")
+
+    # Moshi generation parameters (CLI overrides)
+    parser.add_argument("--text-temperature", type=float, default=0.3, help="Text generation temperature")
+    parser.add_argument("--text-topk", type=int, default=25, help="Text generation top-k")
+    parser.add_argument("--audio-temperature", type=float, default=0.5, help="Audio generation temperature")
+    parser.add_argument("--audio-topk", type=int, default=250, help="Audio generation top-k")
+    parser.add_argument("--pad-mult", type=float, default=0.0, help="Padding multiplier")
+    parser.add_argument("--repetition-penalty", type=float, default=1.0, help="Repetition penalty")
+    parser.add_argument("--repetition-penalty-context", type=int, default=64, help="Repetition penalty context size")
+    parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], default="WARNING", help="Logging level")
+
+    args = parser.parse_args()
+
+    # Derived configuration
+    SERVER_URL = args.server
+    AUDIO_IO_SAMPLE_RATE = args.audio_io_sample_rate
+    BUFFER_SIZE = args.buffer_size  # Often matches MOSHI frame size (1920)
 
     # Set global and module log level to WARNING
-    logging.getLogger().setLevel(logging.WARNING)
-    logger.setLevel(logging.WARNING)
+    logging.getLogger().setLevel(getattr(logging, args.log_level))
+    logger.setLevel(getattr(logging, args.log_level))
 
     print("🎤 Simple Moshi Client Starting...")
     print(f"Server: {SERVER_URL}")
-    print(f"Audio: {SAMPLE_RATE}Hz, {CHANNELS} channel(s), buffer={BUFFER_SIZE}")
+    print(f"Audio: {MOSHI_SAMPLE_RATE}Hz, {MOSHI_CHANNELS} channel(s), buffer={BUFFER_SIZE}")
+    print(f"Audio I/O: {AUDIO_IO_SAMPLE_RATE}Hz")
     print("Press Ctrl+C to stop")
+
+    # Create resamplers based on runtime configuration
+    RATIO_INPUT = MOSHI_SAMPLE_RATE / AUDIO_IO_SAMPLE_RATE
+    RATIO_OUTPUT = AUDIO_IO_SAMPLE_RATE / MOSHI_SAMPLE_RATE
+
+    input_resampler = samplerate.Resampler(converter_type='sinc_best', channels=1)
+    output_resampler = samplerate.Resampler(converter_type='sinc_best', channels=1)
 
     # Initialize components
     client = MoshiClient(
-        text_temperature=0.3,  # 0.7,
-        text_topk=25,
-        audio_temperature=0.5,  # 0.8,
-        audio_topk=250,
-        pad_mult=0.0,
-        repetition_penalty=1.0,
-        repetition_penalty_context=64,
+        text_temperature=args.text_temperature,
+        text_topk=args.text_topk,
+        audio_temperature=args.audio_temperature,
+        audio_topk=args.audio_topk,
+        pad_mult=args.pad_mult,
+        repetition_penalty=args.repetition_penalty,
+        repetition_penalty_context=args.repetition_penalty_context,
         output_buffer_size=BUFFER_SIZE,
     )
     audio_queue = []  # Simple list to store received audio
@@ -61,33 +96,49 @@ if __name__ == "__main__":
         if running:
             # Convert to mono and send to client
             mono_audio = np.mean(indata, axis=1) if indata.ndim > 1 else indata
-            client.add_audio_input(mono_audio.astype(np.float32))
+
+            # Resample to model sample rate
+            resampled_mono_audio = input_resampler.process(mono_audio, ratio=RATIO_INPUT, end_of_input=False)
+
+            client.add_audio_input(resampled_mono_audio.astype(np.float32))
 
     # Audio output callback - plays received audio
+    audio_buffer = np.zeros((0,), dtype=np.float32)  # Buffer to hold leftover audio between calls
     def audio_output_callback(outdata, frames, time, status):
-        global running
+        global running, audio_buffer
         if status:
             logger.warning(f"Output status: {status}")
 
         outdata.fill(0)  # Start with silence
 
         try:
-            # Get audio from client and play it
-            received_audio = client.get_audio_output(timeout=5)  # Block and wait
+            received_audio = None
+            while len(audio_buffer) < frames and running and client.is_connected():
+                # Get audio from client and play it
+                received_audio = client.get_audio_output(timeout=5)  # Block and wait
 
-            if received_audio is None:
+                if received_audio is not None:
+                    # Resample to audio I/O sample rate
+                    resampled_received_audio = output_resampler.process(received_audio, ratio=RATIO_OUTPUT, end_of_input=False)
+
+                    audio_buffer = np.concatenate((audio_buffer, resampled_received_audio))
+
+            if len(audio_buffer) < frames and received_audio is None:
                 logger.error("Received audio is None - stopping client")
                 running = False
                 return
 
-            if len(received_audio) != frames:
+            audio_to_play = audio_buffer[:frames]
+            audio_buffer = audio_buffer[frames:]
+
+            if len(audio_to_play) != frames:
                 logger.error(
-                    f"Audio frame size mismatch: received {len(received_audio)}, expected {frames} - stopping client"
+                    f"Audio frame size mismatch: received {len(audio_to_play)}, expected {frames} - stopping client"
                 )
                 running = False
                 return
 
-            outdata[:, 0] = received_audio
+            outdata[:, 0] = audio_to_play
 
         except Exception as e:
             logger.error(f"Error in audio output callback: {e} - stopping client")
@@ -115,8 +166,8 @@ if __name__ == "__main__":
         # Start audio input stream (microphone)
         print("🎤 Starting microphone...")
         input_stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
+            samplerate=AUDIO_IO_SAMPLE_RATE,
+            channels=MOSHI_CHANNELS,
             callback=audio_input_callback,
             blocksize=BUFFER_SIZE,
             dtype=np.float32,
@@ -126,8 +177,8 @@ if __name__ == "__main__":
         # Start audio output stream (speakers)
         print("🔊 Starting speakers...")
         output_stream = sd.OutputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
+            samplerate=AUDIO_IO_SAMPLE_RATE,
+            channels=MOSHI_CHANNELS,
             callback=audio_output_callback,
             blocksize=BUFFER_SIZE,
             dtype=np.float32,

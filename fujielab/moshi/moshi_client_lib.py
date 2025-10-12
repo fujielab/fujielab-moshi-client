@@ -51,19 +51,19 @@ except ImportError:
     exit(1)
 
 # Configuration
-SAMPLE_RATE = 24000  # Moshi uses 24kHz
-CHANNELS = 1  # Mono
-CHUNK_SIZE = 1920  # 80ms at 24kHz - Moshi's standard frame size
-OPUS_FRAME_SIZE = 1920  # 80ms frames for Opus encoding
+MOSHI_SAMPLE_RATE = 24000  # Moshi uses 24kHz
+MOSHI_CHANNELS = 1  # Mono
+MOSHI_CHUNK_SIZE = 1920  # 80ms at 24kHz - Moshi's standard frame size
+MOSHI_OPUS_FRAME_SIZE = 1920  # 80ms frames for Opus encoding
 
 # Moshi generation parameters (same as Web interface defaults)
-DEFAULT_TEXT_TEMPERATURE = 0.7
-DEFAULT_TEXT_TOPK = 25
-DEFAULT_AUDIO_TEMPERATURE = 0.8
-DEFAULT_AUDIO_TOPK = 250
-DEFAULT_PAD_MULT = 0.0
-DEFAULT_REPETITION_PENALTY = 1.0
-DEFAULT_REPETITION_PENALTY_CONTEXT = 64
+MOSHI_DEFAULT_TEXT_TEMPERATURE = 0.7
+MOSHI_DEFAULT_TEXT_TOPK = 25
+MOSHI_DEFAULT_AUDIO_TEMPERATURE = 0.8
+MOSHI_DEFAULT_AUDIO_TOPK = 250
+MOSHI_DEFAULT_PAD_MULT = 0.0
+MOSHI_DEFAULT_REPETITION_PENALTY = 1.0
+MOSHI_DEFAULT_REPETITION_PENALTY_CONTEXT = 64
 
 # Logging setup
 logging.basicConfig(
@@ -94,9 +94,9 @@ class OggContainer:
             "<8sBBHIhB",
             b"OpusHead",  # Magic signature
             1,  # Version
-            CHANNELS,  # Channel count
+            MOSHI_CHANNELS,  # Channel count
             3840,  # Pre-skip (80ms at 48kHz)
-            SAMPLE_RATE,  # Input sample rate
+            MOSHI_SAMPLE_RATE,  # Input sample rate
             0,  # Output gain
             0,  # Channel mapping family
         )
@@ -172,10 +172,10 @@ class OggContainer:
 class OpusEncoder:
     """Opus encoder using opuslib"""
 
-    def __init__(self, sample_rate=SAMPLE_RATE, channels=CHANNELS):
+    def __init__(self, sample_rate=MOSHI_SAMPLE_RATE, channels=MOSHI_CHANNELS):
         self.sample_rate = sample_rate
         self.channels = channels
-        self.frame_size = OPUS_FRAME_SIZE  # 20ms at 24kHz = 480 samples
+        self.frame_size = MOSHI_OPUS_FRAME_SIZE  # 20ms at 24kHz = 480 samples
 
         # Create Opus encoder
         try:
@@ -302,7 +302,7 @@ class OggPageParser:
 class OpusDecoder:
     """Opus decoder for Ogg-wrapped Opus packets"""
 
-    def __init__(self, sample_rate=SAMPLE_RATE, channels=CHANNELS):
+    def __init__(self, sample_rate=MOSHI_SAMPLE_RATE, channels=MOSHI_CHANNELS):
         self.sample_rate = sample_rate
         self.channels = channels
 
@@ -331,7 +331,7 @@ class OpusDecoder:
                 )
                 # Try direct Opus packet decode for raw data
                 try:
-                    pcm_data = self.decoder.decode(ogg_data, OPUS_FRAME_SIZE)
+                    pcm_data = self.decoder.decode(ogg_data, MOSHI_OPUS_FRAME_SIZE)
                     audio_samples = (
                         np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
                         / 32767.0
@@ -371,7 +371,7 @@ class OpusDecoder:
                 try:
                     # Try decoding with different frame sizes for flexibility
                     frame_sizes = [
-                        OPUS_FRAME_SIZE,
+                        MOSHI_OPUS_FRAME_SIZE,
                         240,
                         480,
                         960,
@@ -492,14 +492,14 @@ class MoshiClient:
 
     def __init__(
         self,
-        text_temperature=DEFAULT_TEXT_TEMPERATURE,
-        text_topk=DEFAULT_TEXT_TOPK,
-        audio_temperature=DEFAULT_AUDIO_TEMPERATURE,
-        audio_topk=DEFAULT_AUDIO_TOPK,
-        pad_mult=DEFAULT_PAD_MULT,
-        repetition_penalty=DEFAULT_REPETITION_PENALTY,
-        repetition_penalty_context=DEFAULT_REPETITION_PENALTY_CONTEXT,
-        output_buffer_size=CHUNK_SIZE,
+        text_temperature=MOSHI_DEFAULT_TEXT_TEMPERATURE,
+        text_topk=MOSHI_DEFAULT_TEXT_TOPK,
+        audio_temperature=MOSHI_DEFAULT_AUDIO_TEMPERATURE,
+        audio_topk=MOSHI_DEFAULT_AUDIO_TOPK,
+        pad_mult=MOSHI_DEFAULT_PAD_MULT,
+        repetition_penalty=MOSHI_DEFAULT_REPETITION_PENALTY,
+        repetition_penalty_context=MOSHI_DEFAULT_REPETITION_PENALTY_CONTEXT,
+        output_buffer_size=MOSHI_CHUNK_SIZE,
     ):
         """
         Initialize MoshiClient with generation parameters.
@@ -661,10 +661,10 @@ class MoshiClient:
             )
 
             # Send complete chunks to the server
-            while len(self._input_audio_buffer) >= CHUNK_SIZE:
+            while len(self._input_audio_buffer) >= MOSHI_CHUNK_SIZE:
                 # Extract one chunk
-                chunk = self._input_audio_buffer[:CHUNK_SIZE].copy()
-                self._input_audio_buffer = self._input_audio_buffer[CHUNK_SIZE:]
+                chunk = self._input_audio_buffer[:MOSHI_CHUNK_SIZE].copy()
+                self._input_audio_buffer = self._input_audio_buffer[MOSHI_CHUNK_SIZE:]
 
                 # Send chunk to encoder queue
                 try:
@@ -1149,4 +1149,4 @@ class MoshiClient:
 
 
 # Export main class
-__all__ = ["MoshiClient", "SAMPLE_RATE", "CHANNELS", "CHUNK_SIZE"]
+__all__ = ["MoshiClient", "MOSHI_SAMPLE_RATE", "MOSHI_CHANNELS", "MOSHI_CHUNK_SIZE"]

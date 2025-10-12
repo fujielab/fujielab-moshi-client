@@ -6,7 +6,7 @@ Test script for MoshiClient buffering functionality
 import numpy as np
 import time
 import threading
-from fujielab.moshi.moshi_client_lib import MoshiClient, SAMPLE_RATE, CHUNK_SIZE
+from fujielab.moshi.moshi_client_lib import MoshiClient, MOSHI_SAMPLE_RATE, MOSHI_CHUNK_SIZE
 
 
 def test_input_buffering():
@@ -18,7 +18,7 @@ def test_input_buffering():
     # Test data of different sizes
     test_sizes = [100, 500, 1000, 1920, 2000, 3000, 5000]
 
-    print(f"Expected chunk size for server: {CHUNK_SIZE}")
+    print(f"Expected chunk size for server: {MOSHI_CHUNK_SIZE}")
 
     for size in test_sizes:
         # Create test audio data
@@ -125,7 +125,7 @@ def test_realistic_scenario():
 
     for i, size in enumerate(sizes):
         audio_data = (
-            np.sin(2 * np.pi * 440 * np.arange(size) / SAMPLE_RATE).astype(np.float32)
+            np.sin(2 * np.pi * 440 * np.arange(size) / MOSHI_SAMPLE_RATE).astype(np.float32)
             * 0.1
         )
         print(f"  Chunk {i+1}: {size} samples")

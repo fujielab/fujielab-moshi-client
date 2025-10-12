@@ -6,7 +6,7 @@ Test script for MoshiClient buffering functionality (offline mode)
 import numpy as np
 import time
 import threading
-from fujielab.moshi.moshi_client_lib import MoshiClient, SAMPLE_RATE, CHUNK_SIZE
+from fujielab.moshi.moshi_client_lib import MoshiClient, MOSHI_SAMPLE_RATE, MOSHI_CHUNK_SIZE
 
 
 def test_input_buffering_offline():
@@ -18,7 +18,7 @@ def test_input_buffering_offline():
     # Test data of different sizes
     test_sizes = [100, 500, 1000, 1920, 2000, 3000, 5000]
 
-    print(f"Expected chunk size for server: {CHUNK_SIZE}")
+    print(f"Expected chunk size for server: {MOSHI_CHUNK_SIZE}")
 
     for size in test_sizes:
         # Create test audio data
@@ -48,10 +48,10 @@ def test_input_buffering_offline():
                 item = client.audio_input_queue.get_nowait()
                 temp_items.append(item)
                 total_queued += len(item)
-                if len(item) == CHUNK_SIZE:
+                if len(item) == MOSHI_CHUNK_SIZE:
                     print(f"  ✅ Queue item size: {len(item)} (correct)")
                 else:
-                    print(f"  ❌ Queue item size: {len(item)} (should be {CHUNK_SIZE})")
+                    print(f"  ❌ Queue item size: {len(item)} (should be {MOSHI_CHUNK_SIZE})")
             except:
                 break
 
@@ -62,8 +62,8 @@ def test_input_buffering_offline():
         print(f"Total samples in queue: {total_queued}")
 
         # Verify buffering logic
-        expected_complete_chunks = size // CHUNK_SIZE
-        expected_remaining = size % CHUNK_SIZE
+        expected_complete_chunks = size // MOSHI_CHUNK_SIZE
+        expected_remaining = size % MOSHI_CHUNK_SIZE
         actual_remaining = len(client._input_audio_buffer)
 
         print(f"Expected complete chunks: {expected_complete_chunks}")
@@ -93,7 +93,7 @@ def test_cumulative_input():
 
     for i, size in enumerate(chunk_sizes):
         test_audio = (
-            np.sin(2 * np.pi * 440 * np.arange(size) / SAMPLE_RATE).astype(np.float32)
+            np.sin(2 * np.pi * 440 * np.arange(size) / MOSHI_SAMPLE_RATE).astype(np.float32)
             * 0.1
         )
 
@@ -107,18 +107,18 @@ def test_cumulative_input():
         print(f"  Total added so far: {total_added}")
         print(f"  Queue items: {queue_items}")
         print(f"  Buffer samples: {buffer_samples}")
-        print(f"  Expected buffer: {total_added % CHUNK_SIZE}")
-        print(f"  Expected queue items: {total_added // CHUNK_SIZE}")
+        print(f"  Expected buffer: {total_added % MOSHI_CHUNK_SIZE}")
+        print(f"  Expected queue items: {total_added // MOSHI_CHUNK_SIZE}")
 
-        if buffer_samples == total_added % CHUNK_SIZE:
+        if buffer_samples == total_added % MOSHI_CHUNK_SIZE:
             print("  ✅ Buffer size correct!")
         else:
             print("  ❌ Buffer size incorrect!")
 
     print(f"\nFinal state:")
     print(f"Total samples added: {total_added}")
-    print(f"Complete chunks expected: {total_added // CHUNK_SIZE}")
-    print(f"Remaining samples expected: {total_added % CHUNK_SIZE}")
+    print(f"Complete chunks expected: {total_added // MOSHI_CHUNK_SIZE}")
+    print(f"Remaining samples expected: {total_added % MOSHI_CHUNK_SIZE}")
     print(f"Queue items: {client.audio_input_queue.qsize()}")
     print(f"Buffer samples: {len(client._input_audio_buffer)}")
 

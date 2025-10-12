@@ -15,13 +15,13 @@ Key Features:
 import numpy as np
 import time
 import asyncio
-from fujielab.moshi.moshi_client_lib import MoshiClient, SAMPLE_RATE
+from fujielab.moshi.moshi_client_lib import MoshiClient, MOSHI_SAMPLE_RATE
 
 
 def generate_test_audio(duration_ms, frequency=440):
     """Generate test audio with specified duration in milliseconds"""
-    samples = int(SAMPLE_RATE * duration_ms / 1000)
-    t = np.arange(samples) / SAMPLE_RATE
+    samples = int(MOSHI_SAMPLE_RATE * duration_ms / 1000)
+    t = np.arange(samples) / MOSHI_SAMPLE_RATE
     audio = np.sin(2 * np.pi * frequency * t).astype(np.float32) * 0.1
     return audio
 
@@ -38,7 +38,7 @@ async def enhanced_client_example():
 
     print(f"Created client with {client.output_buffer_size} sample output buffer")
     print(
-        f"This equals {client.output_buffer_size / SAMPLE_RATE * 1000:.1f}ms at {SAMPLE_RATE}Hz"
+        f"This equals {client.output_buffer_size / MOSHI_SAMPLE_RATE * 1000:.1f}ms at {MOSHI_SAMPLE_RATE}Hz"
     )
 
     # 2. Connect to Moshi server (replace with actual server URL when available)
@@ -65,7 +65,7 @@ async def enhanced_client_example():
         for name, audio in audio_chunks:
             client.add_audio_input(audio)
             print(
-                f"  {name}: {len(audio)} samples ({len(audio)/SAMPLE_RATE*1000:.1f}ms)"
+                f"  {name}: {len(audio)} samples ({len(audio)/MOSHI_SAMPLE_RATE*1000:.1f}ms)"
             )
 
         print(f"\nAll chunks buffered and sent as complete 1920-sample frames")
@@ -108,7 +108,7 @@ async def enhanced_client_example():
         for i, chunk_size in enumerate(mic_chunk_sizes):
             # Generate audio chunk (simulate microphone input)
             mic_audio = generate_test_audio(
-                chunk_size / SAMPLE_RATE * 1000, 220 + i * 55
+                chunk_size / MOSHI_SAMPLE_RATE * 1000, 220 + i * 55
             )
 
             # Send to Moshi
@@ -164,7 +164,7 @@ def demonstrate_offline_features(client):
     print("\n1. Input buffering:")
     sizes = [300, 800, 1200, 500, 2000]
     for size in sizes:
-        audio = generate_test_audio(size / SAMPLE_RATE * 1000)
+        audio = generate_test_audio(size / MOSHI_SAMPLE_RATE * 1000)
         client.add_audio_input(audio)
         queue_items = client.audio_input_queue.qsize()
         buffer_samples = len(client._input_audio_buffer)

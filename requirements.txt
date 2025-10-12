@@ -2,3 +2,4 @@ websockets
 sounddevice
 numpy
 opuslib
+samplerate
