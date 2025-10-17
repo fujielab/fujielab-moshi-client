@@ -7,7 +7,7 @@ Simplest possible Moshi client implementation with CLI overrides.
 No functions, no classes - just the main section.
 
 Requirements:
-- pip install websockets sounddevice numpy opuslib samplerate
+- pip install websockets sounddevice numpy opuslib soxr
 
 Usage examples:
     # Default
@@ -25,7 +25,7 @@ import numpy as np
 import logging
 import signal
 import time
-import samplerate
+import soxr
 import argparse
 
 from .moshi_client_lib import MoshiClient, MOSHI_SAMPLE_RATE, MOSHI_CHANNELS
@@ -42,9 +42,9 @@ if __name__ == "__main__":
     parser.add_argument("-b", "--buffer-size", type=int, default=1920, help="Audio block size (frames) for I/O and client output buffer")
 
     # Moshi generation parameters (CLI overrides)
-    parser.add_argument("--text-temperature", type=float, default=0.3, help="Text generation temperature")
+    parser.add_argument("--text-temperature", type=float, default=0.7, help="Text generation temperature")
     parser.add_argument("--text-topk", type=int, default=25, help="Text generation top-k")
-    parser.add_argument("--audio-temperature", type=float, default=0.5, help="Audio generation temperature")
+    parser.add_argument("--audio-temperature", type=float, default=0.8, help="Audio generation temperature")
     parser.add_argument("--audio-topk", type=int, default=250, help="Audio generation top-k")
     parser.add_argument("--pad-mult", type=float, default=0.0, help="Padding multiplier")
     parser.add_argument("--repetition-penalty", type=float, default=1.0, help="Repetition penalty")
@@ -68,12 +68,22 @@ if __name__ == "__main__":
     print(f"Audio I/O: {AUDIO_IO_SAMPLE_RATE}Hz")
     print("Press Ctrl+C to stop")
 
-    # Create resamplers based on runtime configuration
-    RATIO_INPUT = MOSHI_SAMPLE_RATE / AUDIO_IO_SAMPLE_RATE
-    RATIO_OUTPUT = AUDIO_IO_SAMPLE_RATE / MOSHI_SAMPLE_RATE
-
-    input_resampler = samplerate.Resampler(converter_type='sinc_best', channels=1)
-    output_resampler = samplerate.Resampler(converter_type='sinc_best', channels=1)
+    # Create resamplers based on runtime configuration (streaming)
+    # soxr uses absolute rates instead of ratio and maintains internal state.
+    input_resampler = soxr.ResampleStream(
+        AUDIO_IO_SAMPLE_RATE,  # input rate from mic
+        MOSHI_SAMPLE_RATE,     # target rate for model
+        MOSHI_CHANNELS,        # channels
+        dtype='float32',       # we operate on float32
+        quality='VHQ',         # very high quality to match previous 'sinc_best'
+    )
+    output_resampler = soxr.ResampleStream(
+        MOSHI_SAMPLE_RATE,     # input rate from model
+        AUDIO_IO_SAMPLE_RATE,  # target rate for speakers
+        MOSHI_CHANNELS,
+        dtype='float32',
+        quality='VHQ',
+    )
 
     # Initialize components
     client = MoshiClient(
@@ -97,10 +107,13 @@ if __name__ == "__main__":
             # Convert to mono and send to client
             mono_audio = np.mean(indata, axis=1) if indata.ndim > 1 else indata
 
-            # Resample to model sample rate
-            resampled_mono_audio = input_resampler.process(mono_audio, ratio=RATIO_INPUT, end_of_input=False)
+            # Ensure float32 for soxr stream
+            mono_audio = mono_audio.astype(np.float32, copy=False)
 
-            client.add_audio_input(resampled_mono_audio.astype(np.float32))
+            # Resample to model sample rate
+            resampled_mono_audio = input_resampler.resample_chunk(mono_audio, last=False)
+
+            client.add_audio_input(resampled_mono_audio.astype(np.float32, copy=False))
 
     # Audio output callback - plays received audio
     audio_buffer = np.zeros((0,), dtype=np.float32)  # Buffer to hold leftover audio between calls
@@ -118,8 +131,11 @@ if __name__ == "__main__":
                 received_audio = client.get_audio_output(timeout=5)  # Block and wait
 
                 if received_audio is not None:
+                    # Ensure float32 for soxr stream
+                    received_audio = received_audio.astype(np.float32, copy=False)
+
                     # Resample to audio I/O sample rate
-                    resampled_received_audio = output_resampler.process(received_audio, ratio=RATIO_OUTPUT, end_of_input=False)
+                    resampled_received_audio = output_resampler.resample_chunk(received_audio, last=False)
 
                     audio_buffer = np.concatenate((audio_buffer, resampled_received_audio))
 

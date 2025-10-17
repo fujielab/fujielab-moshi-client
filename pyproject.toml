@@ -15,7 +15,8 @@ dependencies = [
     "websockets",
     "sounddevice",
     "numpy",
-    "opuslib"
+    "opuslib",
+    "soxr",
 ]
 license = { file = "LICENSE" }
 

@@ -87,6 +87,7 @@ python -m fujielab.moshi.simple_moshi_client
 - sounddevice
 - numpy
 - opuslib
+- soxr
 
 ## License
 Apache License 2.0
