@@ -47,9 +47,9 @@ client.disconnect()
 - text_topk: テキスト生成のTop-Kサンプリング（デフォルト: 25）
 - audio_temperature: 音声生成の温度パラメータ（デフォルト: 0.8）
 - audio_topk: 音声生成のTop-Kサンプリング（デフォルト: 250）
-- pad_mult: 音声パディングの倍率（デフォルト: 0.0）
-- repetition_penalty: 繰り返し抑制のペナルティ（デフォルト: 1.0）
-- repetition_penalty_context: 繰り返し抑制のコンテキスト長（デフォルト: 64）
+- pad_mult: 音声パディングの倍率（デフォルト: 0.0） *効果なし*
+- repetition_penalty: 繰り返し抑制のペナルティ（デフォルト: 1.0） *効果なし*
+- repetition_penalty_context: 繰り返し抑制のコンテキスト長（デフォルト: 64） *効果なし*
 - output_buffer_size: 音声出力バッファのサイズ（デフォルト: 1920サンプル）
 
 ### 音声フレームサイズについて
@@ -81,6 +81,10 @@ Moshiサーバーは80ms（1920サンプル）単位で音声を生成します�
 ### シンプルなクライアントの実行
 ```bash
 python -m fujielab.moshi.simple_moshi_client
+```
+詳細な使い方はヘルプを参照してください:
+```bash
+python -m fujielab.moshi.simple_moshi_client --help
 ```
 
 ## 依存パッケージ

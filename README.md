@@ -46,9 +46,9 @@ client.disconnect()
 - text_topk: Top-K sampling for text generation (default: 25)
 - audio_temperature: Temperature parameter for audio generation (default: 0.8)
 - audio_topk: Top-K sampling for audio generation (default: 250)
-- pad_mult: Audio padding multiplier (default: 0.0)
-- repetition_penalty: Repetition penalty (default: 1.0)
-- repetition_penalty_context: Context length for repetition penalty (default: 64)
+- pad_mult: Audio padding multiplier (default: 0.0) *not effective*
+- repetition_penalty: Repetition penalty (default: 1.0) *not effective*
+- repetition_penalty_context: Context length for repetition penalty (default: 64) *not effective*
 - output_buffer_size: Size of audio output buffer (default: 1920 samples)
 
 ### About Audio Frame Size
@@ -80,6 +80,10 @@ Therefore, please note the following points in operation:
 ### Running Simple Client
 ```bash
 python -m fujielab.moshi.simple_moshi_client
+```
+For detailed usage, please refer to the help:
+```bash
+python -m fujielab.moshi.simple_moshi_client --help
 ```
 
 ## Dependencies
