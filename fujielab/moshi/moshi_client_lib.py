@@ -37,6 +37,7 @@ import logging
 import os
 import numpy as np
 import queue
+import janus
 from typing import Optional, List
 import struct
 
@@ -55,6 +56,7 @@ MOSHI_SAMPLE_RATE = 24000  # Moshi uses 24kHz
 MOSHI_CHANNELS = 1  # Mono
 MOSHI_CHUNK_SIZE = 1920  # 80ms at 24kHz - Moshi's standard frame size
 MOSHI_OPUS_FRAME_SIZE = 1920  # 80ms frames for Opus encoding
+MOSHI_CHUNK_DURATION_SEC = MOSHI_CHUNK_SIZE / MOSHI_SAMPLE_RATE  # Duration of one chunk in seconds
 
 # Moshi generation parameters (same as Web interface defaults)
 MOSHI_DEFAULT_TEXT_TEMPERATURE = 0.7
@@ -175,7 +177,7 @@ class OpusEncoder:
     def __init__(self, sample_rate=MOSHI_SAMPLE_RATE, channels=MOSHI_CHANNELS):
         self.sample_rate = sample_rate
         self.channels = channels
-        self.frame_size = MOSHI_OPUS_FRAME_SIZE  # 20ms at 24kHz = 480 samples
+        self.frame_size = MOSHI_OPUS_FRAME_SIZE  # 80ms at 24kHz = 1920 samples
 
         # Create Opus encoder
         try:
@@ -324,8 +326,75 @@ class OpusDecoder:
             return None
 
         try:
-            # Check if this looks like an Ogg page
-            if not ogg_data.startswith(b"OggS"):
+            if ogg_data.startswith(b"OggS"):
+            # Parse Ogg pages
+                pages = self.ogg_parser.feed(ogg_data)
+
+                audio_chunks = []
+
+                for page in pages:
+                    # Extract packet from Ogg page
+                    packet = self._extract_packet_from_page(page)
+                    if not packet:
+                        logger.debug("No packet extracted from Ogg page")
+                        continue
+
+                    # Check if this is a header packet
+                    if packet.startswith(b"OpusHead") or packet.startswith(b"OpusTags"):
+                        self.headers_received += 1
+                        logger.info(
+                            f"Received header packet {self.headers_received}: {len(packet)} bytes"
+                        )
+                        continue
+
+                    logger.debug(f"Trying to decode Opus packet: {len(packet)} bytes")
+
+                    # Decode Opus packet
+                    try:
+                        # Try decoding with different frame sizes for flexibility
+                        frame_sizes = [
+                            MOSHI_OPUS_FRAME_SIZE,
+                            240,
+                            480,
+                            960,
+                            1920,
+                        ]  # 10ms, 20ms, 40ms, 80ms
+
+                        for frame_size in frame_sizes:
+                            try:
+                                pcm_data = self.decoder.decode(packet, frame_size)
+
+                                # Convert from 16-bit PCM to float32
+                                audio_samples = (
+                                    np.frombuffer(pcm_data, dtype=np.int16).astype(
+                                        np.float32
+                                    )
+                                    / 32767.0
+                                )
+
+                                if len(audio_samples) > 0:
+                                    audio_chunks.append(audio_samples)
+                                    logger.debug(
+                                        f"Successfully decoded with frame size {frame_size}: {len(audio_samples)} samples"
+                                    )
+                                    break  # Success, don't try other frame sizes
+
+                            except Exception as frame_e:
+                                logger.debug(f"Frame size {frame_size} failed: {frame_e}")
+                                continue
+
+                    except Exception as e:
+                        logger.debug(f"All Opus decode attempts failed: {e}")
+
+                # Combine all audio chunks
+                if audio_chunks:
+                    combined_audio = np.concatenate(audio_chunks)
+                    logger.info(
+                        f"Successfully decoded audio: {len(combined_audio)} samples, max={np.max(np.abs(combined_audio)):.4f}"
+                    )
+                    return combined_audio
+                # Check if this looks like an Ogg page
+            else: # not ogg_data.startswith(b"OggS")
                 logger.debug(
                     f"Not an Ogg page, trying direct packet decode: {len(ogg_data)} bytes"
                 )
@@ -344,74 +413,6 @@ class OpusDecoder:
                 except Exception as e:
                     logger.debug(f"Direct decode failed: {e}")
                 return None
-
-            # Parse Ogg pages
-            pages = self.ogg_parser.feed(ogg_data)
-
-            audio_chunks = []
-
-            for page in pages:
-                # Extract packet from Ogg page
-                packet = self._extract_packet_from_page(page)
-                if not packet:
-                    logger.debug("No packet extracted from Ogg page")
-                    continue
-
-                # Check if this is a header packet
-                if packet.startswith(b"OpusHead") or packet.startswith(b"OpusTags"):
-                    self.headers_received += 1
-                    logger.info(
-                        f"Received header packet {self.headers_received}: {len(packet)} bytes"
-                    )
-                    continue
-
-                logger.debug(f"Trying to decode Opus packet: {len(packet)} bytes")
-
-                # Decode Opus packet
-                try:
-                    # Try decoding with different frame sizes for flexibility
-                    frame_sizes = [
-                        MOSHI_OPUS_FRAME_SIZE,
-                        240,
-                        480,
-                        960,
-                        1920,
-                    ]  # 10ms, 20ms, 40ms, 80ms
-
-                    for frame_size in frame_sizes:
-                        try:
-                            pcm_data = self.decoder.decode(packet, frame_size)
-
-                            # Convert from 16-bit PCM to float32
-                            audio_samples = (
-                                np.frombuffer(pcm_data, dtype=np.int16).astype(
-                                    np.float32
-                                )
-                                / 32767.0
-                            )
-
-                            if len(audio_samples) > 0:
-                                audio_chunks.append(audio_samples)
-                                logger.debug(
-                                    f"Successfully decoded with frame size {frame_size}: {len(audio_samples)} samples"
-                                )
-                                break  # Success, don't try other frame sizes
-
-                        except Exception as frame_e:
-                            logger.debug(f"Frame size {frame_size} failed: {frame_e}")
-                            continue
-
-                except Exception as e:
-                    logger.debug(f"All Opus decode attempts failed: {e}")
-
-            # Combine all audio chunks
-            if audio_chunks:
-                combined_audio = np.concatenate(audio_chunks)
-                logger.info(
-                    f"Successfully decoded audio: {len(combined_audio)} samples, max={np.max(np.abs(combined_audio)):.4f}"
-                )
-                return combined_audio
-
         except Exception as e:
             logger.error(f"Decoding error: {e}")
 
@@ -525,11 +526,9 @@ class MoshiClient:
         self.output_buffer_size = output_buffer_size
 
         # Thread-safe queues for communication
-        self.audio_input_queue = queue.Queue()  # Input: PCM data to send
-        self.text_output_queue = queue.Queue()  # Output: Text responses
-        self._raw_audio_queue = queue.Queue(
-            maxsize=150
-        )  # Raw audio payloads for background decoding (increased for better buffering)
+        self.audio_input_queue = janus.Queue()  # Input: PCM data to send
+        self.audio_output_queue = janus.Queue()  # Output: Received PCM data
+        self.text_output_queue = janus.Queue()  # Output: Text responses
 
         # Audio buffering for arbitrary-length input/output
         self._input_audio_buffer = np.array(
@@ -612,23 +611,28 @@ class MoshiClient:
             self._running.clear()
             raise RuntimeError("Connection timeout")
 
+        # Clear all buffers and queues
+        self._input_audio_buffer = np.array([], dtype=np.float32)
+        self._output_audio_buffer = np.array([], dtype=np.float32)
+        while not self.audio_output_queue.sync_q.empty():
+            self.audio_output_queue.sync_q.get_nowait()
+        while not self.text_output_queue.sync_q.empty():
+            self.text_output_queue.sync_q.get_nowait()
+
         logger.info("MoshiClient connected successfully")
 
     def disconnect(self):
         """Disconnect from Moshi server (synchronous)"""
-        if not self._running.is_set():
-            return
-
         logger.info("Disconnecting MoshiClient...")
 
-        # Signal shutdown
+        # Signal shutdown even if _running was already cleared by a signal
         self._running.clear()
 
-        # Wait for thread to finish
+        # Wait for thread to finish if it exists
         if self._communication_thread and self._communication_thread.is_alive():
             self._communication_thread.join(timeout=5.0)
 
-        # Clear connection flag
+        # Clear connection flag regardless of prior state
         self._connected.clear()
 
         logger.info("MoshiClient disconnected")
@@ -654,24 +658,23 @@ class MoshiClient:
         if audio_data.dtype != np.float32:
             audio_data = audio_data.astype(np.float32)
 
-        with self._buffer_lock:
-            # Add new audio data to input buffer
-            self._input_audio_buffer = np.concatenate(
-                [self._input_audio_buffer, audio_data]
-            )
+        # Add new audio data to input buffer
+        self._input_audio_buffer = np.concatenate(
+            [self._input_audio_buffer, audio_data]
+        )
 
-            # Send complete chunks to the server
-            while len(self._input_audio_buffer) >= MOSHI_CHUNK_SIZE:
-                # Extract one chunk
-                chunk = self._input_audio_buffer[:MOSHI_CHUNK_SIZE].copy()
-                self._input_audio_buffer = self._input_audio_buffer[MOSHI_CHUNK_SIZE:]
+        # Send complete chunks to the server
+        while len(self._input_audio_buffer) >= MOSHI_CHUNK_SIZE:
+            # Extract one chunk
+            chunk = self._input_audio_buffer[:MOSHI_CHUNK_SIZE].copy()
+            self._input_audio_buffer = self._input_audio_buffer[MOSHI_CHUNK_SIZE:]
 
-                # Send chunk to encoder queue
-                try:
-                    self.audio_input_queue.put_nowait(chunk)
-                except queue.Full:
-                    logger.warning("Audio input queue full, dropping frame")
-                    break
+            # Send chunk to encoder queue
+            try:
+                self.audio_input_queue.sync_q.put_nowait(chunk)
+            except queue.Full:
+                logger.warning("Audio input queue full, dropping frame")
+                break
 
     def get_audio_output(self, timeout: Optional[float] = None) -> Optional[np.ndarray]:
         """
@@ -691,21 +694,40 @@ class MoshiClient:
         start_time = time.time()
         logger.debug(f"get_audio_output called with timeout={timeout}")
 
+        def remaining_timeout() -> Optional[float]:
+            if timeout is None:
+                return None
+            return max(timeout - (time.time() - start_time), 0)
+
         while True:
-            with self._buffer_lock:
-                # Check if we have enough data in the output buffer
-                if len(self._output_audio_buffer) >= self.output_buffer_size:
-                    # Extract the requested amount
-                    result = self._output_audio_buffer[: self.output_buffer_size].copy()
-                    old_buffer_size = len(self._output_audio_buffer)
-                    self._output_audio_buffer = self._output_audio_buffer[
-                        self.output_buffer_size :
-                    ]
-                    new_buffer_size = len(self._output_audio_buffer)
-                    logger.info(
-                        f"📤 get_audio_output: extracted {len(result)} samples, buffer: {old_buffer_size} → {new_buffer_size}"
+            if len(self._output_audio_buffer) >= self.output_buffer_size:
+                # Extract the requested amount
+                result = self._output_audio_buffer[: self.output_buffer_size].copy()
+                old_buffer_size = len(self._output_audio_buffer)
+                self._output_audio_buffer = self._output_audio_buffer[
+                    self.output_buffer_size :
+                ]
+                new_buffer_size = len(self._output_audio_buffer)
+                logger.info(
+                    f"📤 get_audio_output: extracted {len(result)} samples, buffer: {old_buffer_size} → {new_buffer_size}"
+                )
+                return result
+
+            # Try to get more data from the audio output queue
+            try:
+                new_data = self.audio_output_queue.sync_q.get(
+                    timeout=remaining_timeout()
+                )
+                if new_data is not None and len(new_data) > 0:
+                    # Append new data to output buffer
+                    self._output_audio_buffer = np.concatenate(
+                        [self._output_audio_buffer, new_data]
                     )
-                    return result
+                    logger.debug(
+                        f"📥 get_audio_output: received {len(new_data)} samples, buffer size now {len(self._output_audio_buffer)}"
+                    )
+            except queue.Empty:
+                pass
 
             # Check timeout
             if timeout is not None:
@@ -717,15 +739,19 @@ class MoshiClient:
             # # Small sleep to prevent busy waiting and allow decoder to process more data
             # time.sleep(0.001)
 
-    def get_text_output(self) -> Optional[str]:
+    def get_text_output(self, timeout: Optional[float] = None) -> Optional[str]:
         """
         Get received text response (thread-safe, non-blocking).
 
+        Args:
+            timeout: Maximum time to wait for text in seconds. If None, waits indefinitely.
+                     If 0, returns immediately (non-blocking).
+
         Returns:
-            Text response as string or None if no text available
+            Text response as string or None if no text available within timeout
         """
         try:
-            return self.text_output_queue.get_nowait()
+            return self.text_output_queue.sync_q.get(timeout=timeout)
         except queue.Empty:
             return None
 
@@ -787,10 +813,6 @@ class MoshiClient:
             # Signal connection established
             self._connected.set()
 
-            # Start background audio decoder worker
-            logger.info("Starting audio decoder worker...")
-            decoder_task = asyncio.create_task(self._audio_decoder_worker())
-
             # Start receiver loop FIRST to capture all server responses
             logger.info("Starting receiver loop...")
             receiver_task = asyncio.create_task(self._receiver_loop())
@@ -821,13 +843,6 @@ class MoshiClient:
                             logger.error(f"Receiver task failed: {e}")
                             break
 
-                    if decoder_task.done():
-                        try:
-                            await decoder_task  # Re-raise any exception
-                        except Exception as e:
-                            logger.error(f"Decoder task failed: {e}")
-                            break
-
                     await asyncio.sleep(0.1)
 
             except Exception as e:
@@ -837,7 +852,6 @@ class MoshiClient:
             # Cancel tasks
             sender_task.cancel()
             receiver_task.cancel()
-            decoder_task.cancel()
 
             try:
                 await sender_task
@@ -849,12 +863,6 @@ class MoshiClient:
                 await receiver_task
             except asyncio.CancelledError:
                 logger.debug("Receiver task cancelled")
-                pass
-
-            try:
-                await decoder_task
-            except asyncio.CancelledError:
-                logger.debug("Decoder task cancelled")
                 pass
 
         except Exception as e:
@@ -911,7 +919,6 @@ class MoshiClient:
                 break
             await self._websocket.send(b"\x01" + header)
             logger.info(f"Sent Opus header: {len(header)} bytes")
-            await asyncio.sleep(0.01)  # Small delay between headers
 
     async def _sender_loop(self):
         """Background task for sending audio data"""
@@ -929,13 +936,10 @@ class MoshiClient:
         try:
             while self._running.is_set():
                 try:
-                    # Get audio data from thread-safe queue
-                    try:
-                        audio_data = self.audio_input_queue.get(timeout=0.1)
-                    except queue.Empty:
-                        continue
+                    # Get audio data from thread-safe queue with a maximum wait time
+                    audio_data = await self.audio_input_queue.async_q.get()
 
-                    # Encode to Opus using PurePythonOpusEncoder
+                    # Encode to Opus and wrap in Ogg pages
                     ogg_pages = self._encoder.encode(audio_data)
 
                     # Send each Ogg page
@@ -945,10 +949,6 @@ class MoshiClient:
                         sent_chunks += 1
                         send_time = time.time()
                         await self._websocket.send(b"\x01" + ogg_page)
-                        # logger.info(f"→ Sent audio chunk #{sent_chunks}: {len(ogg_page)} bytes at {send_time:.3f}")
-
-                        # Small delay to prevent overwhelming server
-                        await asyncio.sleep(0.001)
 
                 except Exception as e:
                     if self._running.is_set():
@@ -960,10 +960,9 @@ class MoshiClient:
             logger.info(f"→ Sender loop ended, total chunks sent: {sent_chunks}")
 
     async def _receiver_loop(self):
-        """ULTRA-FAST receiver loop - optimized for maximum throughput"""
-        logger.info("ULTRA-FAST receiver loop started")
+        """Efficient receiver loop - blocks until message arrives, then decodes immediately"""
+        logger.info("Receiver loop started (event-driven, no polling)")
         message_count = 0
-        consecutive_timeouts = 0
         last_message_time = time.time()
 
         # Check WebSocket state immediately
@@ -973,28 +972,23 @@ class MoshiClient:
 
         while self._running.is_set():
             try:
-                # ULTRA-SHORT timeout for maximum responsiveness
-                message = await asyncio.wait_for(self._websocket.recv(), timeout=0.0001)
+                # Block until message arrives (no timeout = event-driven)
+                message = await self._websocket.recv()
                 message_count += 1
-                consecutive_timeouts = 0
                 current_time = time.time()
 
-                # ULTRA-MINIMAL logging - only every 100th message
+                # Log every 100th message for monitoring
                 if message_count % 100 == 1:
                     time_since_last = current_time - last_message_time
                     logger.info(
-                        f"★ MSG #{message_count}: len={len(message) if hasattr(message, '__len__') else 'N/A'}, gap={time_since_last:.3f}s"
+                        f"MSG #{message_count}: len={len(message) if hasattr(message, '__len__') else 'N/A'}, gap={time_since_last:.3f}s"
                     )
                     last_message_time = current_time
 
                 if isinstance(message, bytes) and len(message) > 0:
-                    # IMMEDIATE non-blocking processing
-                    self._handle_message_sync(message)
+                    # Process message immediately (includes decoding)
+                    await self._handle_message_direct(message)
 
-            except asyncio.TimeoutError:
-                consecutive_timeouts += 1
-                # Don't sleep on timeout - keep polling aggressive
-                continue
             except websockets.exceptions.ConnectionClosed as e:
                 logger.error(f"WebSocket connection closed in receiver: {e}")
                 break
@@ -1003,76 +997,10 @@ class MoshiClient:
                 # Don't break on individual message errors
                 continue
 
-        logger.info(
-            f"★ ULTRA-FAST receiver ended, total messages: {message_count}, timeouts: {consecutive_timeouts}"
-        )
+        logger.info(f"Receiver loop ended, total messages: {message_count}")
 
-    async def _audio_decoder_worker(self):
-        """Background worker to decode audio without blocking receiver"""
-        logger.info("Audio decoder worker started")
-        decoded_count = 0
-
-        if not self._decoder:
-            logger.error("Opus decoder is None in audio decoder worker")
-            return
-
-        while self._running.is_set():
-            try:
-                # Get raw audio payload from queue - completely non-blocking
-                try:
-                    payload, timestamp = self._raw_audio_queue.get_nowait()
-                except queue.Empty:
-                    await asyncio.sleep(0.01)  # Small sleep to prevent busy waiting
-                    continue
-
-                # Decode in background
-                try:
-                    # Log raw payload details for debugging
-                    if decoded_count < 10 or decoded_count % 100 == 1:
-                        logger.info(
-                            f"🔍 Payload #{decoded_count}: {len(payload)} bytes, type={type(payload)}, starts with: {payload[:20].hex() if len(payload) >= 20 else payload.hex()}"
-                        )
-
-                    audio_data = self._decoder.decode(payload)
-                    if audio_data is not None and len(audio_data) > 0:
-                        decoded_count += 1
-
-                        # Add to the buffering system
-                        with self._buffer_lock:
-                            old_size = len(self._output_audio_buffer)
-                            self._output_audio_buffer = np.concatenate(
-                                [self._output_audio_buffer, audio_data]
-                            )
-                            new_size = len(self._output_audio_buffer)
-
-                        # Enhanced logging after buffer update
-                        if decoded_count <= 50 or decoded_count % 100 == 1:
-                            rms = np.sqrt(np.mean(audio_data**2))
-                            max_amp = np.max(np.abs(audio_data))
-                            logger.info(
-                                f"🔊 Buffer updated #{decoded_count}: {old_size} → {new_size} samples (+{len(audio_data)})"
-                            )
-                            logger.info(
-                                f"✅ Decoded #{decoded_count}: {len(audio_data)} samples, RMS={rms:.4f}, Max={max_amp:.4f}, buffer={new_size}"
-                            )
-                    else:
-                        logger.warning(
-                            f"❌ Decode failed or empty result for payload #{decoded_count}: {len(payload)} bytes"
-                        )
-
-                except Exception as decode_error:
-                    logger.warning(
-                        f"❌ Decode exception for payload #{decoded_count}: {decode_error}"
-                    )
-
-            except Exception as e:
-                logger.error(f"Audio decoder worker error: {e}")
-                break
-
-        logger.info(f"Audio decoder worker ended, total decoded: {decoded_count}")
-
-    def _handle_message_sync(self, message: bytes):
-        """SYNCHRONOUS ULTRA-FAST message handling - zero async overhead"""
+    async def _handle_message_direct(self, message: bytes):
+        """Handle incoming message directly - decode audio immediately without queuing"""
         if len(message) < 1:
             return
 
@@ -1081,36 +1009,36 @@ class MoshiClient:
 
         if msg_type == 0:  # Server handshake
             pass  # No processing needed
-
-        elif msg_type == 1:  # Audio data
-            if payload:
-                # Enhanced logging for audio message analysis
+        elif msg_type == 1:  # Audio data - decode immediately
+            if payload and self._decoder:
+                # Track audio messages for logging
                 if not hasattr(self, "_audio_msg_count"):
                     self._audio_msg_count = 0
                 self._audio_msg_count += 1
 
                 if self._audio_msg_count <= 20 or self._audio_msg_count % 100 == 1:
                     logger.info(
-                        f"🎵 Audio MSG #{self._audio_msg_count}: {len(payload)} bytes, starts: {payload[:16].hex() if len(payload) >= 16 else payload.hex()}"
+                        f"🎵 Audio MSG #{self._audio_msg_count}: {len(payload)} bytes"
                     )
 
-                # Data format confirmed: Server sends Opus-encoded data, not pre-decoded PCM
-                # Previous investigation showed PCM interpretation yields garbage values (RMS=inf, Max=2.69e36)
-                # Current pipeline works correctly: WebSocket → Opus decode → 1920 samples @ 24kHz
-
-                # Queue decoding in background thread to avoid blocking
                 try:
-                    self._raw_audio_queue.put_nowait((payload, time.time()))
-                except queue.Full:
-                    # Drop oldest frame if queue full
-                    try:
-                        dropped_payload, _ = self._raw_audio_queue.get_nowait()
-                        self._raw_audio_queue.put_nowait((payload, time.time()))
+                    # Decode immediately (no queuing)
+                    audio_data = self._decoder.decode(payload)
+
+                    if audio_data is not None and len(audio_data) > 0:
+                        try:
+                            self.audio_output_queue.async_q.put_nowait(audio_data)
+                        except asyncio.QueueFull:
+                            logger.debug("Audio output queue full")
+                    else:
                         logger.warning(
-                            f"🗑️  Dropped audio payload: {len(dropped_payload)} bytes (queue full)"
+                            f"❌ Decode failed for payload #{self._audio_msg_count}: {len(payload)} bytes"
                         )
-                    except queue.Empty:
-                        pass
+
+                except Exception as decode_error:
+                    logger.warning(
+                        f"❌ Decode exception for payload #{self._audio_msg_count}: {decode_error}"
+                    )
 
         elif msg_type == 2:  # Text response
             if payload:
@@ -1119,11 +1047,10 @@ class MoshiClient:
                     text_data = json.loads(payload.decode("utf-8"))
                     if isinstance(text_data, dict) and "text" in text_data:
                         text = text_data["text"]
-                        # Minimal logging for text
                         if len(text.strip()) > 0:
                             logger.info(f"Moshi: {text}")
                             try:
-                                self.text_output_queue.put_nowait(text)
+                                self.text_output_queue.async_q.put_nowait(text)
                             except queue.Full:
                                 logger.debug("Text queue full")
                 except (json.JSONDecodeError, UnicodeDecodeError):
@@ -1133,7 +1060,7 @@ class MoshiClient:
                         if text:
                             logger.info(f"Moshi: {text}")
                             try:
-                                self.text_output_queue.put_nowait(text)
+                                self.text_output_queue.async_q.put_nowait(text)
                             except queue.Full:
                                 logger.debug("Text queue full")
                     except UnicodeDecodeError:
@@ -1143,9 +1070,7 @@ class MoshiClient:
         else:
             logger.debug(f"Unknown message type: {msg_type}")
 
-    async def _handle_message(self, message: bytes):
-        """Handle incoming message (legacy method for compatibility)"""
-        self._handle_message_sync(message)
+
 
 
 # Export main class

@@ -39,7 +39,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Simple Moshi client (voice chat)")
     parser.add_argument("-s", "--server", default="ws://localhost:8998/api/chat", help="Moshi server WebSocket URL")
     parser.add_argument("-r", "--audio-io-sample-rate", type=int, default=16000, help="Audio I/O sample rate for microphone/speaker (Hz)")
-    parser.add_argument("-b", "--buffer-size", type=int, default=1920, help="Audio block size (frames) for I/O and client output buffer")
+    parser.add_argument("-b", "--buffer-size", type=int, default=800, help="Audio block size (frames) for I/O and client output buffer")
 
     # Moshi generation parameters (CLI overrides)
     parser.add_argument("--text-temperature", type=float, default=0.7, help="Text generation temperature")
@@ -124,6 +124,10 @@ if __name__ == "__main__":
 
         outdata.fill(0)  # Start with silence
 
+        # If we are shutting down or already disconnected, do nothing to avoid noisy errors
+        if not running or not client.is_connected():
+            return
+
         try:
             received_audio = None
             while len(audio_buffer) < frames and running and client.is_connected():
@@ -139,8 +143,12 @@ if __name__ == "__main__":
 
                     audio_buffer = np.concatenate((audio_buffer, resampled_received_audio))
 
+            # If we are shutting down while waiting for data, exit quietly
+            if not running or not client.is_connected():
+                return
+
             if len(audio_buffer) < frames and received_audio is None:
-                logger.error("Received audio is None - stopping client")
+                logger.debug("Shutting down: no more audio available")
                 running = False
                 return
 
@@ -207,13 +215,13 @@ if __name__ == "__main__":
         message_count = 0
         while running and client.is_connected():
             # Check for text responses
-            text_response = client.get_text_output()
+            text_response = client.get_text_output(timeout=0.5)  # Non-blocking-ish so Ctrl+C can break the loop
             if text_response:
                 message_count += 1
                 print(f"💬 Moshi #{message_count}: {text_response}")
 
-            # Small delay to prevent busy waiting
-            time.sleep(0.01)
+            # # Small delay to prevent busy waiting
+            # time.sleep(0.01)
 
     except KeyboardInterrupt:
         print("\n🛑 Interrupted by user")
