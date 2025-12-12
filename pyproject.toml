@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fujielab-moshi-client"
-version = "0.1.0"
+version = "0.1.2"
 description = "Fujie lab. version of Moshi client library for Python programs."
 authors = [
     { name="Shinya Fujie", email="shinya.fujie@p.chibakoudai.jp" }
@@ -17,6 +17,7 @@ dependencies = [
     "numpy",
     "opuslib",
     "soxr",
+    "janus",
 ]
 license = { file = "LICENSE" }
 
